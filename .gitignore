@@ -1,0 +1,9 @@
+.env
+.devenv
+.pre-commit-config.yaml
+.ruff_cache
+__pycache__
+logs
+.streamlit/secrets.toml
+temp_*
+*.pyc
