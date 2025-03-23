@@ -121,7 +121,7 @@ class SummarizationPipeline:
             with st.spinner("Reading and processing PDF..."):
                 pages = PDFProcessor.read_pdf(file_path)
                 # Combine pages into batches
-                batch_size = 5
+                batch_size = 3
                 batches = [
                     " ".join(pages[i : i + batch_size])
                     for i in range(0, len(pages), batch_size)
