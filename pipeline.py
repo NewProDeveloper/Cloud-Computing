@@ -34,7 +34,7 @@ class PipelineConfig:
     """Configuration for the summarization pipeline"""
 
     model_name: list = [
-        "qwen-qwq-32b",
+        "deepseek-r1-distill-llama-70b",
         "gemma2-9b-it",
         "llama-3.1-8b-instant",
         "llama-3.2-3b-preview",
