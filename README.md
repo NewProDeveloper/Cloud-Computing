@@ -112,7 +112,7 @@ git push
      - Under "Secrets", add the following:
        ```toml
        [api_keys]
-       groq = "your-groq-api-key-here"
+       GROQ_API_KEY = "your-groq-api-key-here"
        ```
    - Set Python version to 3.10 or higher.
 

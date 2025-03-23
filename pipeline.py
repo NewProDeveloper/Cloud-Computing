@@ -4,8 +4,6 @@ import time
 import random
 from typing import List
 from dotenv import load_dotenv
-import pymupdf4llm
-import textgrad as tg
 import streamlit as st
 
 # Configure logging
@@ -22,8 +20,14 @@ def get_api_key():
     # Fallback to environment variable (for local development)
     return os.getenv("GROQ_API_KEY")
 
+# Set the GROQ_API_KEY in environment variable before importing textgrad
 GROQ_API_KEY = get_api_key()
 assert GROQ_API_KEY, "Please set the GROQ_API_KEY in environment variables or Streamlit secrets"
+os.environ["GROQ_API_KEY"] = GROQ_API_KEY
+
+# Import textgrad after setting the environment variable
+import pymupdf4llm
+import textgrad as tg
 
 class PipelineConfig:
     """Configuration for the summarization pipeline"""
