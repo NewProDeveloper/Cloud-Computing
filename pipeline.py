@@ -29,17 +29,18 @@ os.environ["GROQ_API_KEY"] = GROQ_API_KEY
 import pymupdf4llm
 import textgrad as tg
 
+
 class PipelineConfig:
     """Configuration for the summarization pipeline"""
 
     model_name: list = [
-        "gemma-7b-it",
+        "qwen-qwq-32b",
         "gemma2-9b-it",
-        "llama-3.1-70b-versatile",
+        "deepseek-r1-distill-llama-70b",
         "llama-3.1-8b-instant",
-        "llama-3.2-11b-text-preview",
-        "llama3-8b-8192",
-        "mixtral-8x7b-32768",
+        "llama-3.2-3b-preview",
+        "llama-3.3-70b-versatile",
+        "mistral-saba-24b",
     ]
     temperature: float = 0.5
     api_key: str = GROQ_API_KEY
