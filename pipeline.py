@@ -8,6 +8,9 @@ from dotenv import load_dotenv
 import streamlit as st
 import pymupdf4llm
 import textgrad as tg
+import firebase_admin
+from firebase_admin import credentials, firestore
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -24,8 +27,37 @@ GROQ_API_KEY = get_api_key()
 assert GROQ_API_KEY, "Please set the GROQ_API_KEY in environment variables or Streamlit secrets"
 os.environ["GROQ_API_KEY"] = GROQ_API_KEY
 
+# Firebase setup
+def init_firebase():
+    try:
+        # Try to get Firebase credentials from environment or secrets
+        if 'firebase' in st.secrets and 'credentials' in st.secrets['firebase']:
+            cred_dict = st.secrets['firebase']['credentials']
+        else:
+            # Try to load from a credentials file
+            cred_path = os.getenv("FIREBASE_CREDENTIALS", "firebase-credentials.json")
+            if os.path.exists(cred_path):
+                with open(cred_path, 'r') as f:
+                    cred_dict = json.load(f)
+            else:
+                logger.warning("Firebase credentials not found, using SQLite as fallback")
+                return False
+                
+        # Initialize Firebase
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(cred_dict)
+            firebase_admin.initialize_app(cred)
+        return True
+    except Exception as e:
+        logger.error(f"Error initializing Firebase: {e}")
+        return False
+
+# Initialize Firebase and check if it's available
+firebase_available = init_firebase()
+
 # Database setup
 def init_db():
+    # Always initialize SQLite as fallback
     conn = sqlite3.connect("summaries.db")
     cursor = conn.cursor()
     cursor.execute("""
@@ -42,13 +74,42 @@ def init_db():
 init_db()
 
 def save_summary(filename: str, summary: str):
+    if firebase_available:
+        try:
+            db = firestore.client()
+            db.collection('summary_history').add({
+                'filename': filename,
+                'summary': summary,
+                'timestamp': firestore.SERVER_TIMESTAMP
+            })
+            logger.info("Summary saved to Firebase")
+            return
+        except Exception as e:
+            logger.error(f"Error saving to Firebase: {e}")
+    
     conn = sqlite3.connect("summaries.db")
     cursor = conn.cursor()
     cursor.execute("INSERT INTO summary_history (filename, summary) VALUES (?, ?)", (filename, summary))
     conn.commit()
     conn.close()
+    logger.info("Summary saved to SQLite")
 
 def get_summary_history() -> List[Tuple[int, str, str, str]]:
+    if firebase_available:
+        try:
+            db = firestore.client()
+            docs = db.collection('summary_history').order_by('timestamp', direction=firestore.Query.DESCENDING).get()
+            history = []
+            for i, doc in enumerate(docs):
+                data = doc.to_dict()
+                # Convert Firestore timestamp to string
+                timestamp = data.get('timestamp')
+                timestamp_str = timestamp.strftime('%Y-%m-%d %H:%M:%S') if timestamp else "Unknown"
+                history.append((i+1, data.get('filename', ''), data.get('summary', ''), timestamp_str))
+            return history
+        except Exception as e:
+            logger.error(f"Error retrieving from Firebase: {e}")
+    
     conn = sqlite3.connect("summaries.db")
     cursor = conn.cursor()
     cursor.execute("SELECT id, filename, summary, timestamp FROM summary_history ORDER BY timestamp DESC")
