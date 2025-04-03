@@ -2,15 +2,9 @@ import os
 import logging
 import time
 import random
-import sqlite3
-from typing import List, Tuple
+from typing import List
 from dotenv import load_dotenv
 import streamlit as st
-import pymupdf4llm
-import textgrad as tg
-import firebase_admin
-from firebase_admin import credentials, firestore
-import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -18,108 +12,45 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
+# Get API key from environment variables or Streamlit secrets
 def get_api_key():
+    # Check Streamlit secrets first (for deployment)
     if 'api_keys' in st.secrets and 'GROQ_API_KEY' in st.secrets['api_keys']:
         return st.secrets['api_keys']['GROQ_API_KEY']
+    # Fallback to environment variable (for local development)
     return os.getenv("GROQ_API_KEY")
 
+# Set the GROQ_API_KEY in environment variable before importing textgrad
 GROQ_API_KEY = get_api_key()
 assert GROQ_API_KEY, "Please set the GROQ_API_KEY in environment variables or Streamlit secrets"
 os.environ["GROQ_API_KEY"] = GROQ_API_KEY
 
-# Firebase setup
-def init_firebase():
-    try:
-        # Try to get Firebase credentials from environment or secrets
-        if 'firebase' in st.secrets and 'credentials' in st.secrets['firebase']:
-            cred_dict = st.secrets['firebase']['credentials']
-        else:
-            # Try to load from a credentials file
-            cred_path = os.getenv("FIREBASE_CREDENTIALS", "firebase-credentials.json")
-            if os.path.exists(cred_path):
-                with open(cred_path, 'r') as f:
-                    cred_dict = json.load(f)
-            else:
-                logger.warning("Firebase credentials not found, using SQLite as fallback")
-                return False
-                
-        # Initialize Firebase
-        if not firebase_admin._apps:
-            cred = credentials.Certificate(cred_dict)
-            firebase_admin.initialize_app(cred)
-        return True
-    except Exception as e:
-        logger.error(f"Error initializing Firebase: {e}")
-        return False
+# Import textgrad after setting the environment variable
+import pymupdf4llm
+import textgrad as tg
 
-# Initialize Firebase and check if it's available
-firebase_available = init_firebase()
 
-# Database setup
-def init_db():
-    # Always initialize SQLite as fallback
-    conn = sqlite3.connect("summaries.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS summary_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            filename TEXT,
-            summary TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-    conn.close()
+class PipelineConfig:
+    """Configuration for the summarization pipeline"""
 
-init_db()
-
-def save_summary(filename: str, summary: str):
-    if firebase_available:
-        try:
-            db = firestore.client()
-            db.collection('summary_history').add({
-                'filename': filename,
-                'summary': summary,
-                'timestamp': firestore.SERVER_TIMESTAMP
-            })
-            logger.info("Summary saved to Firebase")
-            return
-        except Exception as e:
-            logger.error(f"Error saving to Firebase: {e}")
-    
-    conn = sqlite3.connect("summaries.db")
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO summary_history (filename, summary) VALUES (?, ?)", (filename, summary))
-    conn.commit()
-    conn.close()
-    logger.info("Summary saved to SQLite")
-
-def get_summary_history() -> List[Tuple[int, str, str, str]]:
-    if firebase_available:
-        try:
-            db = firestore.client()
-            docs = db.collection('summary_history').order_by('timestamp', direction=firestore.Query.DESCENDING).get()
-            history = []
-            for i, doc in enumerate(docs):
-                data = doc.to_dict()
-                # Convert Firestore timestamp to string
-                timestamp = data.get('timestamp')
-                timestamp_str = timestamp.strftime('%Y-%m-%d %H:%M:%S') if timestamp else "Unknown"
-                history.append((i+1, data.get('filename', ''), data.get('summary', ''), timestamp_str))
-            return history
-        except Exception as e:
-            logger.error(f"Error retrieving from Firebase: {e}")
-    
-    conn = sqlite3.connect("summaries.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, filename, summary, timestamp FROM summary_history ORDER BY timestamp DESC")
-    history = cursor.fetchall()
-    conn.close()
-    return history
+    model_name: list = [
+        "deepseek-r1-distill-llama-70b",
+        "gemma2-9b-it",
+        "llama-3.1-8b-instant",
+        "llama-3.2-3b-preview",
+        "llama-3.3-70b-versatile",
+        "mistral-saba-24b",
+    ]
+    temperature: float = 0.5
+    api_key: str = GROQ_API_KEY
 
 class PDFProcessor:
-    @staticmethod
+    """Handles PDF reading and text extraction"""
+
+    @staticmethod   # Because this method does not require any instance of the class to be created. It can be called using the class name itself
     def read_pdf(file_path: str) -> List[str]:
+        """Extract text from PDF file using pymupdf4llm."""
+
         try:
             llama_reader = pymupdf4llm.LlamaMarkdownReader()
             doc = llama_reader.load_data(file_path)
@@ -129,19 +60,22 @@ class PDFProcessor:
             raise
 
 class SummarizationPipeline:
+    """End-to-end pipeline for PDF summarization"""
+
     def __init__(self):
-        self.model_no = 0 
-        self.models = [
-            "deepseek-r1-distill-llama-70b", "gemma2-9b-it", "llama-3.1-8b-instant",
-            "llama-3.2-3b-preview", "llama-3.3-70b-versatile", "mistral-saba-24b"
-        ]
+        self.config = PipelineConfig() # Creating an instance of the PipelineConfig class
+        self.model_no = 0 # This is basically to get faster results by using different models
 
     def initialize_model(self):
-        llm = tg.get_engine(f"groq-{self.models[self.model_no]}")
-        tg.set_backward_engine(llm, override=True)
+        """Initialize the text generation model"""
+
+        llm = tg.get_engine(f"groq-{self.config.model_name[self.model_no]}") # Initializing the model for forward pass
+        tg.set_backward_engine(llm, override=True) # Initializing the model for backward pass
         return tg.BlackboxLLM(llm)
 
     def retry_with_backoff(self, func, *args, **kwargs):
+        """Retry a function with exponential backoff in case of failure"""
+
         backoff_time = 5
         max_backoff_time = 60
         while True:
@@ -150,39 +84,56 @@ class SummarizationPipeline:
             except Exception:
                 logger.warning(f"Rate limit hit, retrying in {backoff_time} seconds...")
                 time.sleep(backoff_time)
-                backoff_time = min(max_backoff_time, backoff_time * 2 + random.uniform(0, 1))
+                backoff_time = min(
+                    max_backoff_time, backoff_time * 2 + random.uniform(0, 1)
+                )
 
     def process_batch(self, batch_text: str) -> tg.Variable:
+        """Process a batch of text and generate a summary"""
+
         system_prompt = tg.Variable(
-            value=f"Summarize this financial document: \n{batch_text}",
+            value=f"Here's a financial document. Provide a concise summary highlighting key takeaways. \nText: {batch_text}",
             requires_grad=True,
             role_description="system_prompt",
         )
+        evaluation_instr = (
+            "If nothing is important (like header, footer, introduction, title page, etc.) "
+            "then just output 'No important information found'. Else, highlight the important "
+            "information in key points. Do not add any additional information "
+        )
         answer = self.retry_with_backoff(self.initialize_model(), system_prompt)
-        self.optimize_answer(answer)
+        self.optimize_answer(answer, evaluation_instr)
         return answer
 
-    def optimize_answer(self, answer: tg.Variable):
+    def optimize_answer(self, answer: tg.Variable, evaluation_instr: str):
+        """Optimize the generated answer using gradient descent"""
+
         optimizer = tg.TGD(parameters=[answer])
-        loss_fn = tg.TextLoss("Summarization optimization")
+        loss_fn = tg.TextLoss(evaluation_instr)
         loss = loss_fn(answer)
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
 
     def process(self, file_path: str) -> str:
+        """Process the entire PDF and generate a summary"""
         try:
             with st.spinner("Reading and processing PDF..."):
                 pages = PDFProcessor.read_pdf(file_path)
+                # Combine pages into batches
                 batch_size = 3
-                batches = [" ".join(pages[i:i + batch_size]) for i in range(0, len(pages), batch_size)]
+                batches = [
+                    " ".join(pages[i : i + batch_size])
+                    for i in range(0, len(pages), batch_size)
+                ]
 
                 progress_bar = st.progress(0)
                 batch_summaries = []
                 for i, batch in enumerate(batches):
                     batch_summaries.append(self.process_batch(batch))
                     progress_bar.progress((i + 1) / len(batches))
-                    self.model_no = (self.model_no + 1) % len(self.models)
+                    self.model_no += 1
+                    self.model_no %= len(self.config.model_name) - 1
 
                 combined_text = " ".join([batch.value for batch in batch_summaries])
                 final_summary = self.summarize_document(combined_text)
@@ -193,40 +144,47 @@ class SummarizationPipeline:
             raise
 
     def summarize_document(self, text: str) -> tg.Variable:
+        """Generate a final summary for the entire document"""
         system_prompt = tg.Variable(
-            value=f"Provide a concise summary: \n{text}",
+            value=f"Here's a financial document. Provide a concise summary highlighting key takeaways.\nText: {text}",
             requires_grad=True,
             role_description="system_prompt",
         )
+        evaluation_instr = (
+            "Provide a concise summary of the document. Be very careful to not exclude the most "
+            "important information and provide correct statistical data. Keep the summary in specific "
+            "points and do not add any additional information not given in the text."
+        )
         final_answer = self.retry_with_backoff(self.initialize_model(), system_prompt)
-        self.optimize_answer(final_answer)
+        self.optimize_answer(final_answer, evaluation_instr)
         return final_answer
 
 def main():
+    """Main function to run the model in Streamlit"""
+
     st.title("PDF Summarization Tool")
-    st.write("Upload a PDF file to generate a summary.")
+    st.write("Upload a PDF file to generate a summary of its contents.")
 
     uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
-    if uploaded_file:
-        temp_path = f"temp_{uploaded_file.name}"
-        with open(temp_path, "wb") as f:
-            f.write(uploaded_file.getvalue())
+
+    if uploaded_file is not None:
+        # Save the uploaded file temporarily
+        with st.spinner("Saving uploaded file..."):
+            temp_path = f"temp_{uploaded_file.name}"
+            with open(temp_path, "wb") as f:
+                f.write(uploaded_file.getvalue())
 
         try:
             pipeline = SummarizationPipeline()
             summary = pipeline.process(temp_path)
-            # st.subheader("Summary")
-            # st.write(summary)
-            save_summary(uploaded_file.name, summary)
-        finally:
-            os.remove(temp_path)
 
-    st.subheader("Summary History")
-    history = get_summary_history()
-    for record in history:
-        st.write(f"**{record[1]}** ({record[3]})")
-        st.write(record[2])
-        st.markdown("---")
+            st.subheader("Summary")
+            st.write(summary)
+
+        finally:
+            # Cleanup temporary file
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
 if __name__ == "__main__":
     main()
