@@ -215,8 +215,8 @@ def main():
         try:
             pipeline = SummarizationPipeline()
             summary = pipeline.process(temp_path)
-            st.subheader("Summary")
-            st.write(summary)
+            # st.subheader("Summary")
+            # st.write(summary)
             save_summary(uploaded_file.name, summary)
         finally:
             os.remove(temp_path)
